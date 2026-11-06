@@ -27,6 +27,15 @@ final class Converter {
         case nothing
         case resetBuffer
         case replaceBuffer(Range<Int>, [KeyStroke])
+
+        /// Без содержимого текста — только тип результата.
+        var logName: String {
+            switch self {
+            case .nothing: return "nothing (toggle layout)"
+            case .resetBuffer: return "converted selection/caret word"
+            case .replaceBuffer: return "converted typed word"
+            }
+        }
     }
 
     private struct Context {
@@ -77,12 +86,18 @@ final class Converter {
         let set = LayoutSet(layouts: layouts().layouts, currentID: TIS.currentLayoutID())
         guard let cur = set.current, let next = set.target(from: cur) else { return }
         TIS.select(next)
-        monitor.resetBuffer()
+        monitor.resetBuffer("layout-toggle")
     }
 
     // MARK: - Фоновый поток
 
     private func perform(_ ctx: Context) -> Outcome {
+        let outcome = performInner(ctx)
+        log.debug("trigger in \(ctx.bundleID, privacy: .public): buffer=\(ctx.buffer.count) word=\(Self.lastWordRange(ctx.buffer)?.count ?? 0) -> \(outcome.logName, privacy: .public)")
+        return outcome
+    }
+
+    private func performInner(_ ctx: Context) -> Outcome {
         let element = AX.focusedElement()
         if let element, AX.isSecure(element) { return .nothing }
 

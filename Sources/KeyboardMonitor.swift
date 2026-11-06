@@ -1,5 +1,8 @@
 import AppKit
 import Carbon
+import os
+
+let log = Logger(subsystem: "local.makame.pintoswitcher", category: "main")
 
 /// Глобальный перехват клавиатуры (только чтение, события не блокируются).
 /// Ведёт буфер набранных символов и ловит одиночное нажатие Control.
@@ -55,15 +58,18 @@ final class KeyboardMonitor {
         runLoopSource = nil
     }
 
-    func resetBuffer() {
-        if !buffer.isEmpty { buffer.removeAll(keepingCapacity: true) }
+    func resetBuffer(_ reason: String = "other") {
+        if !buffer.isEmpty {
+            log.debug("buffer reset (\(reason, privacy: .public)), had \(self.buffer.count) strokes")
+            buffer.removeAll(keepingCapacity: true)
+        }
         generation += 1
     }
 
     /// Заменяет часть буфера результатом конвертации (если пользователь ничего не успел набрать).
     func replace(range: Range<Int>, with strokes: [KeyStroke], expectedGeneration: Int) {
         guard generation == expectedGeneration, range.upperBound <= buffer.count else {
-            resetBuffer()
+            resetBuffer("replace-mismatch")
             return
         }
         buffer.replaceSubrange(range, with: strokes)
@@ -86,10 +92,13 @@ final class KeyboardMonitor {
         switch type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             ctrlInterrupted = true
-            resetBuffer()
+            resetBuffer("mouse")
         case .scrollWheel:
             if ctrlDownAt != nil { ctrlInterrupted = true } // Control+прокрутка (масштаб) — не нажатие
         case .keyDown:
+            if ctrlDownAt != nil {
+                log.debug("keyDown while ctrl held, pid \(event.getIntegerValueField(.eventSourceUnixProcessID))")
+            }
             ctrlInterrupted = true
             handleKeyDown(event)
         case .flagsChanged:
@@ -105,7 +114,7 @@ final class KeyboardMonitor {
 
         // Любое сочетание с Cmd/Ctrl/Option — это команда, а не набор текста.
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) {
-            resetBuffer()
+            resetBuffer("modifier-combo")
             return
         }
 
@@ -115,7 +124,9 @@ final class KeyboardMonitor {
             return
         case 36, 76, 48, 53, 117, 115, 119, 116, 121, 123, 124, 125, 126:
             // Enter, Tab, Esc, Forward Delete, Home, End, PageUp/Down, стрелки
-            resetBuffer()
+            let pid = event.getIntegerValueField(.eventSourceUnixProcessID)
+            log.debug("nav key \(keyCode) from pid \(pid) flags \(flags.rawValue, format: .hex)")
+            resetBuffer("nav-key")
             return
         default:
             break
@@ -126,7 +137,7 @@ final class KeyboardMonitor {
         event.keyboardGetUnicodeString(maxStringLength: chars.count, actualStringLength: &length, unicodeString: &chars)
         let text = String(utf16CodeUnits: chars, count: min(length, chars.count))
         guard KeyboardLayout.isPrintable(text) else {
-            resetBuffer()
+            resetBuffer("non-printable")
             return
         }
 
@@ -143,6 +154,7 @@ final class KeyboardMonitor {
         let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
         let now = ProcessInfo.processInfo.systemUptime
+        log.debug("flags key \(keyCode) flags \(flags.rawValue, format: .hex) pid \(event.getIntegerValueField(.eventSourceUnixProcessID)) ctrlDown=\(self.ctrlDownAt != nil) interrupted=\(self.ctrlInterrupted)")
 
         guard keyCode == 59 || keyCode == 62 else { // не Control
             if keyCode != 57 && ctrlDownAt != nil { ctrlInterrupted = true } // Caps Lock не мешает
